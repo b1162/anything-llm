@@ -1,89 +1,224 @@
+const prisma = require("../utils/prisma");
+
 const WorkspaceChats = {
-  tablename: "workspace_chats",
-  colsInit: `
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  workspaceId INTEGER NOT NULL,
-  prompt TEXT NOT NULL,
-  response TEXT NOT NULL,
-  include BOOL DEFAULT true,
-  createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
-  lastUpdatedAt TEXT DEFAULT CURRENT_TIMESTAMP
-  `,
-  db: async function () {
-    const sqlite3 = require("sqlite3").verbose();
-    const { open } = require("sqlite");
-
-    const db = await open({
-      filename: `${
-        !!process.env.STORAGE_DIR ? `${process.env.STORAGE_DIR}/` : ""
-      }anythingllm.db`,
-      driver: sqlite3.Database,
-    });
-
-    await db.exec(
-      `CREATE TABLE IF NOT EXISTS ${this.tablename} (${this.colsInit})`
-    );
-    db.on("trace", (sql) => console.log(sql));
-    return db;
-  },
-  new: async function ({ workspaceId, prompt, response = {} }) {
-    const db = await this.db();
-    const { id, success, message } = await db
-      .run(
-        `INSERT INTO ${this.tablename} (workspaceId, prompt, response) VALUES (?, ?, ?)`,
-        [workspaceId, prompt, JSON.stringify(response)]
-      )
-      .then((res) => {
-        return { id: res.lastID, success: true, message: null };
-      })
-      .catch((error) => {
-        return { id: null, success: false, message: error.message };
+  new: async function ({
+    workspaceId,
+    prompt,
+    response = {},
+    user = null,
+    threadId = null,
+  }) {
+    try {
+      const chat = await prisma.workspace_chats.create({
+        data: {
+          workspaceId,
+          prompt,
+          response: JSON.stringify(response),
+          user_id: user?.id || null,
+          thread_id: threadId,
+        },
       });
-    if (!success) return { chat: null, message };
+      return { chat, message: null };
+    } catch (error) {
+      console.error(error.message);
+      return { chat: null, message: error.message };
+    }
+  },
 
-    const chat = await db.get(
-      `SELECT * FROM ${this.tablename} WHERE id = ${id}`
-    );
-    return { chat, message: null };
+  forWorkspaceByUser: async function (
+    workspaceId = null,
+    userId = null,
+    limit = null,
+    orderBy = null
+  ) {
+    if (!workspaceId || !userId) return [];
+    try {
+      const chats = await prisma.workspace_chats.findMany({
+        where: {
+          workspaceId,
+          user_id: userId,
+          thread_id: null, // this function is now only used for the default thread on workspaces and users
+          include: true,
+        },
+        ...(limit !== null ? { take: limit } : {}),
+        ...(orderBy !== null ? { orderBy } : { orderBy: { id: "asc" } }),
+      });
+      return chats;
+    } catch (error) {
+      console.error(error.message);
+      return [];
+    }
   },
-  forWorkspace: async function (workspaceId = null) {
+
+  forWorkspace: async function (
+    workspaceId = null,
+    limit = null,
+    orderBy = null
+  ) {
     if (!workspaceId) return [];
-    return await this.where(
-      `workspaceId = ${workspaceId} AND include = true`,
-      null,
-      "ORDER BY id ASC"
-    );
+    try {
+      const chats = await prisma.workspace_chats.findMany({
+        where: {
+          workspaceId,
+          thread_id: null, // this function is now only used for the default thread on workspaces
+          include: true,
+        },
+        ...(limit !== null ? { take: limit } : {}),
+        ...(orderBy !== null ? { orderBy } : { orderBy: { id: "asc" } }),
+      });
+      return chats;
+    } catch (error) {
+      console.error(error.message);
+      return [];
+    }
   },
-  markHistoryInvalid: async function (workspaceId = null) {
+
+  markHistoryInvalid: async function (workspaceId = null, user = null) {
     if (!workspaceId) return;
-    const db = await this.db();
-    await db.run(
-      `UPDATE ${this.tablename} SET include = false WHERE workspaceId = ?`,
-      [workspaceId]
-    );
-    return;
+    try {
+      await prisma.workspace_chats.updateMany({
+        where: {
+          workspaceId,
+          user_id: user?.id,
+          thread_id: null, // this function is now only used for the default thread on workspaces
+        },
+        data: {
+          include: false,
+        },
+      });
+      return;
+    } catch (error) {
+      console.error(error.message);
+    }
   },
-  get: async function (clause = "") {
-    const db = await this.db();
-    const result = await db
-      .get(`SELECT * FROM ${this.tablename} WHERE ${clause}`)
-      .then((res) => res || null);
-    if (!result) return null;
-    return result;
+
+  markThreadHistoryInvalid: async function (
+    workspaceId = null,
+    user = null,
+    threadId = null
+  ) {
+    if (!workspaceId || !threadId) return;
+    try {
+      await prisma.workspace_chats.updateMany({
+        where: {
+          workspaceId,
+          thread_id: threadId,
+          user_id: user?.id,
+        },
+        data: {
+          include: false,
+        },
+      });
+      return;
+    } catch (error) {
+      console.error(error.message);
+    }
   },
-  delete: async function (clause = "") {
-    const db = await this.db();
-    await db.get(`DELETE FROM ${this.tablename} WHERE ${clause}`);
-    return true;
+
+  get: async function (clause = {}, limit = null, orderBy = null) {
+    try {
+      const chat = await prisma.workspace_chats.findFirst({
+        where: clause,
+        ...(limit !== null ? { take: limit } : {}),
+        ...(orderBy !== null ? { orderBy } : {}),
+      });
+      return chat || null;
+    } catch (error) {
+      console.error(error.message);
+      return null;
+    }
   },
-  where: async function (clause = "", limit = null, order = null) {
-    const db = await this.db();
-    const results = await db.all(
-      `SELECT * FROM ${this.tablename} ${clause ? `WHERE ${clause}` : ""} ${
-        !!limit ? `LIMIT ${limit}` : ""
-      } ${!!order ? order : ""}`
-    );
-    return results;
+
+  delete: async function (clause = {}) {
+    try {
+      await prisma.workspace_chats.deleteMany({
+        where: clause,
+      });
+      return true;
+    } catch (error) {
+      console.error(error.message);
+      return false;
+    }
+  },
+
+  where: async function (
+    clause = {},
+    limit = null,
+    orderBy = null,
+    offset = null
+  ) {
+    try {
+      const chats = await prisma.workspace_chats.findMany({
+        where: clause,
+        ...(limit !== null ? { take: limit } : {}),
+        ...(offset !== null ? { skip: offset } : {}),
+        ...(orderBy !== null ? { orderBy } : {}),
+      });
+      return chats;
+    } catch (error) {
+      console.error(error.message);
+      return [];
+    }
+  },
+
+  count: async function (clause = {}) {
+    try {
+      const count = await prisma.workspace_chats.count({
+        where: clause,
+      });
+      return count;
+    } catch (error) {
+      console.error(error.message);
+      return 0;
+    }
+  },
+
+  whereWithData: async function (
+    clause = {},
+    limit = null,
+    offset = null,
+    orderBy = null
+  ) {
+    const { Workspace } = require("./workspace");
+    const { User } = require("./user");
+
+    try {
+      const results = await this.where(clause, limit, orderBy, offset);
+
+      for (const res of results) {
+        const workspace = await Workspace.get({ id: res.workspaceId });
+        res.workspace = workspace
+          ? { name: workspace.name, slug: workspace.slug }
+          : { name: "deleted workspace", slug: null };
+
+        const user = res.user_id ? await User.get({ id: res.user_id }) : null;
+        res.user = user
+          ? { username: user.username }
+          : { username: "unknown user" };
+      }
+
+      return results;
+    } catch (error) {
+      console.error(error.message);
+      return [];
+    }
+  },
+  updateFeedbackScore: async function (chatId = null, feedbackScore = null) {
+    if (!chatId) return;
+    try {
+      await prisma.workspace_chats.update({
+        where: {
+          id: Number(chatId),
+        },
+        data: {
+          feedbackScore:
+            feedbackScore === null ? null : Number(feedbackScore) === 1,
+        },
+      });
+      return;
+    } catch (error) {
+      console.error(error.message);
+    }
   },
 };
 

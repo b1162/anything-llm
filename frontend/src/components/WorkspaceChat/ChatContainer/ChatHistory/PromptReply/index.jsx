@@ -1,10 +1,10 @@
-import { memo, useEffect, useRef, useState } from "react";
-import { AlertTriangle } from "react-feather";
+import { memo } from "react";
+import { Warning } from "@phosphor-icons/react";
 import Jazzicon from "../../../../UserIcon";
-import { decode as HTMLDecode } from "he";
-import { v4 } from "uuid";
+import renderMarkdown from "@/utils/chat/markdown";
+import Citations from "../Citation";
 
-function PromptReply({
+const PromptReply = ({
   uuid,
   reply,
   pending,
@@ -12,22 +12,20 @@ function PromptReply({
   workspace,
   sources = [],
   closed = true,
-}) {
-  const replyRef = useRef(null);
-  useEffect(() => {
-    if (replyRef.current)
-      replyRef.current.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [replyRef.current]);
+}) => {
+  const assistantBackgroundColor = "bg-historical-msg-system";
+  if (!reply && sources.length === 0 && !pending && !error) return null;
 
-  if (!reply && !sources.length === 0 && !pending && !error) return null;
   if (pending) {
     return (
-      <div className="chat__message flex justify-start mb-4 items-end">
-        <Jazzicon size={30} user={{ uid: workspace.slug }} />
-        <div className="ml-2 pt-2 px-6 max-w-[75%] bg-orange-100 dark:bg-stone-700 rounded-t-2xl rounded-br-2xl rounded-bl-sm">
-          <span className={`inline-block p-2`}>
-            <div className="dot-falling"></div>
-          </span>
+      <div
+        className={`flex justify-center items-end w-full ${assistantBackgroundColor}`}
+      >
+        <div className="py-6 px-4 w-full flex gap-x-5 md:max-w-[80%] flex-col">
+          <div className="flex gap-x-5">
+            <WorkspaceProfileImage workspace={workspace} />
+            <div className="mt-3 ml-5 dot-falling"></div>
+          </div>
         </div>
       </div>
     );
@@ -35,15 +33,19 @@ function PromptReply({
 
   if (error) {
     return (
-      <div className="chat__message flex justify-start mb-4 items-center">
-        <Jazzicon size={30} user={{ uid: workspace.slug }} />
-        <div className="ml-2 py-3 px-4 rounded-br-3xl rounded-tr-3xl rounded-tl-xl text-slate-100 ">
-          <div className="bg-red-50 text-red-500 rounded-lg w-fit flex flex-col p-2">
-            <span className={`inline-block`}>
-              <AlertTriangle className="h-4 w-4 mb-1 inline-block" /> Could not
+      <div
+        className={`flex justify-center items-end w-full ${assistantBackgroundColor}`}
+      >
+        <div className="py-6 px-4 w-full flex gap-x-5 md:max-w-[80%] flex-col">
+          <div className="flex gap-x-5">
+            <WorkspaceProfileImage workspace={workspace} />
+            <span
+              className={`inline-block p-2 rounded-lg bg-red-50 text-red-500`}
+            >
+              <Warning className="h-4 w-4 mb-1 inline-block" /> Could not
               respond to message.
+              <span className="text-xs">Reason: {error || "unknown"}</span>
             </span>
-            <span className="text-xs">Reason: {error || "unknown"}</span>
           </div>
         </div>
       </div>
@@ -53,61 +55,36 @@ function PromptReply({
   return (
     <div
       key={uuid}
-      ref={replyRef}
-      className="chat__message mb-4 flex justify-start items-end"
+      className={`flex justify-center items-end w-full ${assistantBackgroundColor}`}
     >
-      <Jazzicon size={30} user={{ uid: workspace.slug }} />
-      <div className="ml-2 py-3 px-4 max-w-[75%] bg-orange-100 dark:bg-stone-700 rounded-t-2xl rounded-br-2xl rounded-bl-sm">
-        <p className="text-[15px] whitespace-pre-line break-words text-slate-800 dark:text-slate-200 font-semibold">
-          {reply}
-          {!closed && <i className="not-italic blink">|</i>}
-        </p>
+      <div className="py-6 px-4 w-full flex gap-x-5 md:max-w-[80%] flex-col">
+        <div className="flex gap-x-5">
+          <WorkspaceProfileImage workspace={workspace} />
+          <span
+            className={`reply flex flex-col gap-y-1 mt-2`}
+            dangerouslySetInnerHTML={{ __html: renderMarkdown(reply) }}
+          />
+        </div>
         <Citations sources={sources} />
       </div>
     </div>
   );
-}
-
-const Citations = ({ sources = [] }) => {
-  const [show, setShow] = useState(false);
-  if (sources.length === 0) return null;
-
-  return (
-    <div className="flex flex-col mt-4 justify-left">
-      <button
-        type="button"
-        onClick={() => setShow(!show)}
-        className="w-fit text-gray-700 dark:text-stone-400 italic text-xs"
-      >
-        {show ? "hide" : "show"} citations{show && "*"}
-      </button>
-      {show && (
-        <>
-          <div className="w-full flex flex-wrap items-center gap-4 mt-1 doc__source">
-            {sources.map((source) => {
-              const { id = null, title, url } = source;
-              const handleClick = () => {
-                if (!url) return false;
-                window.open(url, "_blank");
-              };
-              return (
-                <button
-                  key={id || v4()}
-                  onClick={handleClick}
-                  className="italic transition-all duration-300 w-fit bg-gray-400 text-gray-900 py-[1px] hover:text-slate-200 hover:bg-gray-500 hover:dark:text-gray-900 dark:bg-stone-400 dark:hover:bg-stone-300 rounded-full px-2 text-xs leading-tight"
-                >
-                  "{HTMLDecode(title)}"
-                </button>
-              );
-            })}
-          </div>
-          <p className="w-fit text-gray-700 dark:text-stone-400 text-xs mt-1">
-            *citation may not be relevant to end result.
-          </p>
-        </>
-      )}
-    </div>
-  );
 };
+
+export function WorkspaceProfileImage({ workspace }) {
+  if (!!workspace.pfpUrl) {
+    return (
+      <div className="relative w-[35px] h-[35px] rounded-full flex-shrink-0 overflow-hidden">
+        <img
+          src={workspace.pfpUrl}
+          alt="Workspace profile picture"
+          className="absolute top-0 left-0 w-full h-full object-cover rounded-full bg-white"
+        />
+      </div>
+    );
+  }
+
+  return <Jazzicon size={36} user={{ uid: workspace.slug }} role="assistant" />;
+}
 
 export default memo(PromptReply);

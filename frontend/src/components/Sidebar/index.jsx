@@ -1,135 +1,191 @@
-import React, { useRef } from "react";
-import { BookOpen, Briefcase, Cpu, GitHub, Key, Plus } from "react-feather";
-import IndexCount from "./IndexCount";
-import LLMStatus from "./LLMStatus";
-import KeysModal, { useKeysModal } from "../Modals/Keys";
+import React, { useEffect, useRef, useState } from "react";
+import { Plus, List } from "@phosphor-icons/react";
 import NewWorkspaceModal, {
   useNewWorkspaceModal,
 } from "../Modals/NewWorkspace";
 import ActiveWorkspaces from "./ActiveWorkspaces";
-import paths from "../../utils/paths";
+import { USER_BACKGROUND_COLOR } from "@/utils/constants";
+import useLogo from "@/hooks/useLogo";
+import useUser from "@/hooks/useUser";
+import Footer from "../Footer";
+import SettingsButton from "../SettingsButton";
+import { Link } from "react-router-dom";
+import paths from "@/utils/paths";
 
 export default function Sidebar() {
+  const { user } = useUser();
+  const { logo } = useLogo();
   const sidebarRef = useRef(null);
-  const {
-    showing: showingKeyModal,
-    showModal: showKeyModal,
-    hideModal: hideKeyModal,
-  } = useKeysModal();
   const {
     showing: showingNewWsModal,
     showModal: showNewWsModal,
     hideModal: hideNewWsModal,
   } = useNewWorkspaceModal();
 
-  // const handleWidthToggle = () => {
-  //   if (!sidebarRef.current) return false;
-  //   sidebarRef.current.classList.add('translate-x-[-100%]')
-  // }
-
   return (
-    <>
+    <div>
+      <Link
+        to={paths.home()}
+        className="flex shrink-0 max-w-[55%] items-center justify-start mx-[38px] my-[18px]"
+        aria-label="Home"
+      >
+        <img
+          src={logo}
+          alt="Logo"
+          className="rounded max-h-[24px]"
+          style={{ objectFit: "contain" }}
+        />
+      </Link>
       <div
         ref={sidebarRef}
-        style={{ height: "calc(100% - 32px)" }}
-        className="transition-all duration-500 relative m-[16px] rounded-[26px] bg-white dark:bg-black-900 min-w-[15.5%] p-[18px] "
+        style={{ height: "calc(100% - 76px)" }}
+        className="relative m-[16px] rounded-[16px] bg-sidebar border-2 border-outline min-w-[250px] p-[10px]"
       >
-        {/* <button onClick={handleWidthToggle} className='absolute -right-[13px] top-[35%] bg-white w-auto h-auto bg-transparent flex items-center'>
-        <svg width="16" height="96" viewBox="0 0 16 96" fill="none" xmlns="http://www.w3.org/2000/svg" stroke="#141414"><path d="M2.5 0H3C3 20 15 12 15 32V64C15 84 3 76 3 96H2.5V0Z" fill="black" fill-opacity="0.12" stroke="transparent" stroke-width="0px"></path><path d="M0 0H2.5C2.5 20 14.5 12 14.5 32V64C14.5 84 2.5 76 2.5 96H0V0Z" fill="#141414"></path></svg>
-        <ChevronLeft className='absolute h-4 w-4 text-white mr-1' />
-      </button> */}
-
-        <div className="w-full h-full flex flex-col overflow-x-hidden items-between">
-          {/* Header Information */}
-          <div className="flex w-full items-center justify-between">
-            <p className="text-xl font-base text-slate-600 dark:text-slate-200">
-              AnythingLLM
-            </p>
-            <div className="flex gap-x-2 items-center text-slate-500">
-              <button
-                onClick={showKeyModal}
-                className="transition-all duration-300 p-2 rounded-full bg-slate-200 text-slate-400 dark:bg-stone-800 hover:bg-slate-800 hover:text-slate-200 dark:hover:text-slate-200"
-              >
-                <Key className="h-4 w-4 " />
-              </button>
-            </div>
-          </div>
-
-          {/* Primary Body */}
-          <div className="h-[100%] flex flex-col w-full justify-between pt-4 overflow-y-hidden">
-            <div className="h-auto sidebar-items dark:sidebar-items">
-              <div className="flex flex-col gap-y-4 h-[65vh] pb-8 overflow-y-scroll no-scroll">
-                <div className="flex gap-x-2 items-center justify-between">
+        <div className="flex flex-col h-full overflow-x-hidden">
+          <div className="flex-grow flex flex-col min-w-[235px]">
+            <div className="flex flex-col gap-y-2 pb-8 overflow-y-scroll no-scroll">
+              <div className="flex gap-x-2 items-center justify-between">
+                {(!user || user?.role !== "default") && (
                   <button
                     onClick={showNewWsModal}
-                    className="flex flex-grow w-[75%] h-[36px] gap-x-2 py-[5px] px-4 border border-slate-400 rounded-lg text-slate-800 dark:text-slate-200 justify-start items-center hover:bg-slate-100 dark:hover:bg-stone-900"
+                    className="flex flex-grow w-[75%] h-[44px] gap-x-2 py-[5px] px-2.5 mb-2 bg-white rounded-[8px] text-sidebar justify-center items-center hover:bg-opacity-80 transition-all duration-300"
                   >
-                    <Plus className="h-4 w-4" />
-                    <p className="text-slate-800 dark:text-slate-200 text-xs leading-loose font-semibold">
-                      New workspace
+                    <Plus size={18} weight="bold" />
+                    <p className="text-sidebar text-sm font-semibold">
+                      New Workspace
                     </p>
                   </button>
-                </div>
-                <ActiveWorkspaces />
+                )}
               </div>
+              <ActiveWorkspaces />
             </div>
-            <div>
-              <div className="flex flex-col gap-y-2">
-                <div className="w-full flex items-center justify-between">
-                  <LLMStatus />
-                  <IndexCount />
-                </div>
-                <a
-                  href={paths.hosting()}
-                  target="_blank"
-                  className="flex flex-grow w-[100%] h-[36px] gap-x-2 py-[5px] px-4 border border-slate-400 dark:border-transparent rounded-lg text-slate-800 dark:text-slate-200 justify-center items-center hover:bg-slate-100 dark:bg-stone-800 dark:hover:bg-stone-900"
-                >
-                  <Cpu className="h-4 w-4" />
-                  <p className="text-slate-800 dark:text-slate-200 text-xs leading-loose font-semibold">
-                    Managed cloud hosting
-                  </p>
-                </a>
-                <a
-                  href={paths.hosting()}
-                  target="_blank"
-                  className="flex flex-grow w-[100%] h-[36px] gap-x-2 py-[5px] px-4 border border-slate-400 dark:border-transparent rounded-lg text-slate-800 dark:text-slate-200 justify-center items-center hover:bg-slate-100  dark:bg-stone-800 dark:hover:bg-stone-900"
-                >
-                  <Briefcase className="h-4 w-4" />
-                  <p className="text-slate-800 dark:text-slate-200 text-xs leading-loose font-semibold">
-                    Enterprise Installation
-                  </p>
-                </a>
-              </div>
-
-              {/* Footer */}
-              <div className="flex items-end justify-between mt-2">
-                <div className="flex gap-x-1 items-center">
-                  <a
-                    href={paths.github()}
-                    className="transition-all duration-300 p-2 rounded-full bg-slate-200 text-slate-400 dark:bg-slate-800 hover:bg-slate-800 hover:text-slate-200 dark:hover:text-slate-200"
-                  >
-                    <GitHub className="h-4 w-4 " />
-                  </a>
-                  <a
-                    href={paths.docs()}
-                    className="transition-all duration-300 p-2 rounded-full bg-slate-200 text-slate-400 dark:bg-slate-800 hover:bg-slate-800 hover:text-slate-200 dark:hover:text-slate-200"
-                  >
-                    <BookOpen className="h-4 w-4 " />
-                  </a>
-                </div>
-                <a
-                  href={paths.mailToMintplex()}
-                  className="transition-all duration-300 text-xs text-slate-200 dark:text-slate-600 hover:text-blue-600 dark:hover:text-blue-400"
-                >
-                  @MintplexLabs
-                </a>
-              </div>
+            <div className="flex flex-col flex-grow justify-end mb-2">
+              <Footer />
             </div>
           </div>
         </div>
       </div>
-      {showingKeyModal && <KeysModal hideModal={hideKeyModal} />}
       {showingNewWsModal && <NewWorkspaceModal hideModal={hideNewWsModal} />}
+    </div>
+  );
+}
+
+export function SidebarMobileHeader() {
+  const { logo } = useLogo();
+  const sidebarRef = useRef(null);
+  const [showSidebar, setShowSidebar] = useState(false);
+  const [showBgOverlay, setShowBgOverlay] = useState(false);
+  const {
+    showing: showingNewWsModal,
+    showModal: showNewWsModal,
+    hideModal: hideNewWsModal,
+  } = useNewWorkspaceModal();
+  const { user } = useUser();
+
+  useEffect(() => {
+    // Darkens the rest of the screen
+    // when sidebar is open.
+    function handleBg() {
+      if (showSidebar) {
+        setTimeout(() => {
+          setShowBgOverlay(true);
+        }, 300);
+      } else {
+        setShowBgOverlay(false);
+      }
+    }
+    handleBg();
+  }, [showSidebar]);
+
+  return (
+    <>
+      <div
+        aria-label="Show sidebar"
+        className="fixed top-0 left-0 right-0 z-10 flex justify-between items-center px-4 py-2 bg-sidebar text-slate-200 shadow-lg h-16"
+      >
+        <button
+          onClick={() => setShowSidebar(true)}
+          className="rounded-md p-2 flex items-center justify-center text-slate-200"
+        >
+          <List className="h-6 w-6" />
+        </button>
+        <div className="flex items-center justify-center flex-grow">
+          <img
+            src={logo}
+            alt="Logo"
+            className="block mx-auto h-6 w-auto"
+            style={{ maxHeight: "40px", objectFit: "contain" }}
+          />
+        </div>
+        <div className="w-12"></div>
+      </div>
+      <div
+        style={{
+          transform: showSidebar ? `translateX(0vw)` : `translateX(-100vw)`,
+        }}
+        className={`z-99 fixed top-0 left-0 transition-all duration-500 w-[100vw] h-[100vh]`}
+      >
+        <div
+          className={`${
+            showBgOverlay
+              ? "transition-all opacity-1"
+              : "transition-none opacity-0"
+          }  duration-500 fixed top-0 left-0 ${USER_BACKGROUND_COLOR} bg-opacity-75 w-screen h-screen`}
+          onClick={() => setShowSidebar(false)}
+        />
+        <div
+          ref={sidebarRef}
+          className="relative h-[100vh] fixed top-0 left-0  rounded-r-[26px] bg-sidebar w-[80%] p-[18px] "
+        >
+          <div className="w-full h-full flex flex-col overflow-x-hidden items-between">
+            {/* Header Information */}
+            <div className="flex w-full items-center justify-between gap-x-4">
+              <div className="flex shrink-1 w-fit items-center justify-start">
+                <img
+                  src={logo}
+                  alt="Logo"
+                  className="rounded w-full max-h-[40px]"
+                  style={{ objectFit: "contain" }}
+                />
+              </div>
+              {(!user || user?.role !== "default") && (
+                <div className="flex gap-x-2 items-center text-slate-500 shink-0">
+                  <SettingsButton />
+                </div>
+              )}
+            </div>
+
+            {/* Primary Body */}
+            <div className="h-full flex flex-col w-full justify-between pt-4 overflow-y-hidden ">
+              <div className="h-auto md:sidebar-items">
+                <div
+                  style={{ height: "calc(100vw - -3rem)" }}
+                  className=" flex flex-col gap-y-4 pb-8 overflow-y-scroll no-scroll"
+                >
+                  <div className="flex gap-x-2 items-center justify-between">
+                    {(!user || user?.role !== "default") && (
+                      <button
+                        onClick={showNewWsModal}
+                        className="flex flex-grow w-[75%] h-[44px] gap-x-2 py-[5px] px-4 bg-white rounded-lg text-sidebar justify-center items-center hover:bg-opacity-80 transition-all duration-300"
+                      >
+                        <Plus className="h-5 w-5" />
+                        <p className="text-sidebar text-sm font-semibold">
+                          New Workspace
+                        </p>
+                      </button>
+                    )}
+                  </div>
+                  <ActiveWorkspaces />
+                </div>
+              </div>
+              <div>
+                <Footer />
+              </div>
+            </div>
+          </div>
+        </div>
+        {showingNewWsModal && <NewWorkspaceModal hideModal={hideNewWsModal} />}
+      </div>
     </>
   );
 }

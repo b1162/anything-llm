@@ -1,106 +1,110 @@
-import { useEffect, useRef, memo, useState } from "react";
-import { AlertTriangle } from "react-feather";
+import React, { memo } from "react";
+import { Warning } from "@phosphor-icons/react";
 import Jazzicon from "../../../../UserIcon";
+import Actions from "./Actions";
+import renderMarkdown from "@/utils/chat/markdown";
+import { userFromStorage } from "@/utils/request";
+import Citations from "../Citation";
+import { AI_BACKGROUND_COLOR, USER_BACKGROUND_COLOR } from "@/utils/constants";
 import { v4 } from "uuid";
-import { decode as HTMLDecode } from "he";
+import createDOMPurify from "dompurify";
 
-function HistoricalMessage({
+const DOMPurify = createDOMPurify(window);
+const HistoricalMessage = ({
+  uuid = v4(),
   message,
   role,
   workspace,
   sources = [],
   error = false,
-}) {
-  const replyRef = useRef(null);
-  useEffect(() => {
-    if (replyRef.current)
-      replyRef.current.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [replyRef.current]);
-
-  if (role === "user") {
-    return (
-      <div className="flex justify-end mb-4 items-start">
-        <div className="mr-2 py-1 px-4 max-w-[75%] bg-slate-200 dark:bg-amber-800 rounded-b-2xl rounded-tl-2xl rounded-tr-sm">
-          <span
-            className={`inline-block p-2 rounded-lg whitespace-pre-line text-slate-800 dark:text-slate-200 font-semibold`}
-          >
-            {message}
-          </span>
-        </div>
-        <Jazzicon size={30} user={{ uid: "user" }} />
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="flex justify-start mb-4 items-end">
-        <Jazzicon size={30} user={{ uid: workspace.slug }} />
-        <div className="ml-2 max-w-[75%] bg-orange-100 dark:bg-stone-700 rounded-t-2xl rounded-br-2xl rounded-bl-sm">
-          <span
-            className={`inline-block p-2 rounded-lg bg-red-50 text-red-500`}
-          >
-            <AlertTriangle className="h-4 w-4 mb-1 inline-block" /> Could not
-            respond to message.
-          </span>
-        </div>
-      </div>
-    );
-  }
-
+  feedbackScore = null,
+  chatId = null,
+  isLastMessage = false,
+  regenerateMessage,
+}) => {
   return (
-    <div ref={replyRef} className="flex justify-start items-end mb-4">
-      <Jazzicon size={30} user={{ uid: workspace.slug }} />
-      <div className="ml-2 py-3 px-4 max-w-[75%] bg-orange-100 dark:bg-stone-700 rounded-t-2xl rounded-br-2xl rounded-bl-sm">
-        <span className="whitespace-pre-line text-slate-800 dark:text-slate-200 font-semibold">
-          {message}
-        </span>
-        <Citations sources={sources} />
-      </div>
-    </div>
-  );
-}
-
-const Citations = ({ sources = [] }) => {
-  const [show, setShow] = useState(false);
-  if (sources.length === 0) return null;
-
-  return (
-    <div className="flex flex-col mt-4 justify-left">
-      <button
-        type="button"
-        onClick={() => setShow(!show)}
-        className="w-fit text-gray-700 dark:text-stone-400 italic text-xs"
-      >
-        {show ? "hide" : "show"} citations{show && "*"}
-      </button>
-      {show && (
-        <>
-          <div className="w-full flex flex-wrap items-center gap-4 mt-1 doc__source">
-            {sources.map((source) => {
-              const { id = null, title, url } = source;
-              const handleClick = () => {
-                if (!url) return false;
-                window.open(url, "_blank");
-              };
-              return (
-                <button
-                  key={id || v4()}
-                  onClick={handleClick}
-                  className="italic transition-all duration-300 w-fit bg-gray-400 text-gray-900 py-[1px] hover:text-slate-200 hover:bg-gray-500 hover:dark:text-gray-900 dark:bg-stone-400 dark:hover:bg-stone-300 rounded-full px-2 text-xs leading-tight"
-                >
-                  "{HTMLDecode(title)}"
-                </button>
-              );
-            })}
+    <div
+      key={uuid}
+      className={`flex justify-center items-end w-full ${
+        role === "user" ? USER_BACKGROUND_COLOR : AI_BACKGROUND_COLOR
+      }`}
+    >
+      <div className={`py-8 px-4 w-full flex gap-x-5 md:max-w-[80%] flex-col`}>
+        <div className="flex gap-x-5">
+          <ProfileImage role={role} workspace={workspace} />
+          {error ? (
+            <div className="p-2 rounded-lg bg-red-50 text-red-500">
+              <span className={`inline-block `}>
+                <Warning className="h-4 w-4 mb-1 inline-block" /> Could not
+                respond to message.
+              </span>
+              <p className="text-xs font-mono mt-2 border-l-2 border-red-300 pl-2 bg-red-200 p-2 rounded-sm">
+                {error}
+              </p>
+            </div>
+          ) : (
+            <span
+              className={`flex flex-col gap-y-1`}
+              dangerouslySetInnerHTML={{
+                __html: DOMPurify.sanitize(renderMarkdown(message)),
+              }}
+            />
+          )}
+        </div>
+        {role === "assistant" && !error && (
+          <div className="flex gap-x-5">
+            <div className="relative w-[35px] h-[35px] rounded-full flex-shrink-0 overflow-hidden" />
+            <Actions
+              message={message}
+              feedbackScore={feedbackScore}
+              chatId={chatId}
+              slug={workspace?.slug}
+              isLastMessage={isLastMessage}
+              regenerateMessage={regenerateMessage}
+            />
           </div>
-          <p className="w-fit text-gray-700 dark:text-stone-400 text-xs mt-1">
-            *citation may not be relevant to end result.
-          </p>
-        </>
-      )}
+        )}
+        {role === "assistant" && <Citations sources={sources} />}
+      </div>
     </div>
   );
 };
 
-export default memo(HistoricalMessage);
+function ProfileImage({ role, workspace }) {
+  if (role === "assistant" && workspace.pfpUrl) {
+    return (
+      <div className="relative w-[35px] h-[35px] rounded-full flex-shrink-0 overflow-hidden">
+        <img
+          src={workspace.pfpUrl}
+          alt="Workspace profile picture"
+          className="absolute top-0 left-0 w-full h-full object-cover rounded-full bg-white"
+        />
+      </div>
+    );
+  }
+
+  return (
+    <Jazzicon
+      size={36}
+      user={{
+        uid: role === "user" ? userFromStorage()?.username : workspace.slug,
+      }}
+      role={role}
+    />
+  );
+}
+
+export default memo(
+  HistoricalMessage,
+  // Skip re-render the historical message:
+  // if the content is the exact same AND (not streaming)
+  // the lastMessage status is the same (regen icon)
+  // and the chatID matches between renders. (feedback icons)
+  (prevProps, nextProps) => {
+    return (
+      prevProps.message === nextProps.message &&
+      prevProps.isLastMessage === nextProps.isLastMessage &&
+      prevProps.chatId === nextProps.chatId
+    );
+  }
+);

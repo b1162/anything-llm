@@ -1,6 +1,6 @@
-outputs/*/*.json
 hotdir/*
-hotdir/processed/*
 !hotdir/__HOTDIR__.md
-!hotdir/processed
-
+yarn-error.log
+!yarn.lock
+outputs
+scripts

@@ -1,21 +1,79 @@
-import React, { useState, useRef } from "react";
-import { Loader, Menu, Send, X } from "react-feather";
+import React, { useState, useRef, useEffect } from "react";
+import SlashCommandsButton, {
+  SlashCommands,
+  useSlashCommands,
+} from "./SlashCommands";
+import debounce from "lodash.debounce";
+import { PaperPlaneRight } from "@phosphor-icons/react";
+import StopGenerationButton from "./StopGenerationButton";
+import AvailableAgentsButton, {
+  AvailableAgents,
+  useAvailableAgents,
+} from "./AgentMenu";
+import TextSizeButton from "./TextSizeMenu";
+import SpeechToText from "./SpeechToText";
+import { Tooltip } from "react-tooltip";
 
+export const PROMPT_INPUT_EVENT = "set_prompt_input";
 export default function PromptInput({
-  workspace,
-  message,
   submit,
   onChange,
   inputDisabled,
   buttonDisabled,
+  sendCommand,
 }) {
-  const [showMenu, setShowMenu] = useState(false);
+  const [promptInput, setPromptInput] = useState("");
+  const { showAgents, setShowAgents } = useAvailableAgents();
+  const { showSlashCommand, setShowSlashCommand } = useSlashCommands();
   const formRef = useRef(null);
+  const textareaRef = useRef(null);
   const [_, setFocused] = useState(false);
+
+  // To prevent too many re-renders we remotely listen for updates from the parent
+  // via an event cycle. Otherwise, using message as a prop leads to a re-render every
+  // change on the input.
+  function handlePromptUpdate(e) {
+    setPromptInput(e?.detail ?? "");
+  }
+
+  useEffect(() => {
+    if (!!window)
+      window.addEventListener(PROMPT_INPUT_EVENT, handlePromptUpdate);
+    return () =>
+      window?.removeEventListener(PROMPT_INPUT_EVENT, handlePromptUpdate);
+  }, []);
+
+  useEffect(() => {
+    if (!inputDisabled && textareaRef.current) {
+      textareaRef.current.focus();
+    }
+    resetTextAreaHeight();
+  }, [inputDisabled]);
+
   const handleSubmit = (e) => {
     setFocused(false);
     submit(e);
   };
+
+  const resetTextAreaHeight = () => {
+    if (textareaRef.current) {
+      textareaRef.current.style.height = "auto";
+    }
+  };
+
+  const checkForSlash = (e) => {
+    const input = e.target.value;
+    if (input === "/") setShowSlashCommand(true);
+    if (showSlashCommand) setShowSlashCommand(false);
+    return;
+  };
+
+  const checkForAt = (e) => {
+    const input = e.target.value;
+    if (input === "@") return setShowAgents(true);
+    if (showAgents) return setShowAgents(false);
+  };
+
   const captureEnter = (event) => {
     if (event.keyCode == 13) {
       if (!event.shiftKey) {
@@ -23,84 +81,100 @@ export default function PromptInput({
       }
     }
   };
+
   const adjustTextArea = (event) => {
     const element = event.target;
-    element.style.height = "1px";
-    element.style.height =
-      event.target.value.length !== 0
-        ? 25 + element.scrollHeight + "px"
-        : "1px";
+    element.style.height = "auto";
+    element.style.height = `${element.scrollHeight}px`;
   };
 
-  const setTextCommand = (command = "") => {
-    onChange({ target: { value: `${command} ${message}` } });
-  };
+  const watchForSlash = debounce(checkForSlash, 300);
+  const watchForAt = debounce(checkForAt, 300);
 
   return (
-    <div className="w-full fixed md:absolute bottom-0 left-0">
+    <div className="w-full fixed md:absolute bottom-0 left-0 z-10 md:z-0 flex justify-center items-center">
+      <SlashCommands
+        showing={showSlashCommand}
+        setShowing={setShowSlashCommand}
+        sendCommand={sendCommand}
+      />
+      <AvailableAgents
+        showing={showAgents}
+        setShowing={setShowAgents}
+        sendCommand={sendCommand}
+        promptRef={textareaRef}
+      />
       <form
         onSubmit={handleSubmit}
-        className="flex flex-col gap-y-1 bg-transparentrounded-t-lg w-3/4 mx-auto"
+        className="flex flex-col gap-y-1 rounded-t-lg md:w-3/4 w-full mx-auto max-w-xl"
       >
-        <div className="flex items-center py-2 px-4 rounded-lg">
-          {/* Toggle selector? */}
-          {/* <button
-            onClick={() => setShowMenu(!showMenu)}
-            type="button"
-            className="p-2 text-slate-200 bg-transparent rounded-md hover:bg-gray-50 dark:hover:bg-stone-500">
-            <Menu className="w-4 h-4 md:h-6 md:w-6" />
-          </button> */}
-          <textarea
-            onKeyUp={adjustTextArea}
-            onKeyDown={captureEnter}
-            onChange={onChange}
-            required={true}
-            maxLength={240}
-            disabled={inputDisabled}
-            onFocus={() => setFocused(true)}
-            onBlur={(e) => {
-              setFocused(false);
-              adjustTextArea(e);
-            }}
-            value={message}
-            className="cursor-text max-h-[100px] md:min-h-[40px] block mx-2 md:mx-4 p-2.5 w-full text-[16px] md:text-sm rounded-lg border bg-gray-50 border-gray-300 placeholder-gray-400 text-gray-900 dark:text-white dark:bg-stone-600 dark:border-stone-700 dark:placeholder-stone-400"
-            placeholder="Shift + Enter for newline. Enter to submit."
-          />
-          <button
-            ref={formRef}
-            type="submit"
-            disabled={buttonDisabled}
-            className="inline-flex justify-center p-0 md:p-2 rounded-full cursor-pointer text-black-900 dark:text-slate-200 hover:bg-gray-600 dark:hover:bg-stone-500"
-          >
-            {buttonDisabled ? (
-              <Loader className="w-6 h-6 animate-spin" />
-            ) : (
-              <svg
-                aria-hidden="true"
-                className="w-6 h-6 rotate-45"
-                fill="currentColor"
-                viewBox="0 0 20 20"
-                xmlns="http://www.w3.org/2000/svg"
-              >
-                <path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z"></path>
-              </svg>
-            )}
-            <span className="sr-only">Send message</span>
-          </button>
+        <div className="flex items-center rounded-lg md:mb-4">
+          <div className="w-[600px] bg-main-gradient shadow-2xl border border-white/50 rounded-2xl flex flex-col px-4 overflow-hidden">
+            <div className="flex items-center w-full border-b-2 border-gray-500/50">
+              <textarea
+                ref={textareaRef}
+                onChange={(e) => {
+                  onChange(e);
+                  watchForSlash(e);
+                  watchForAt(e);
+                  adjustTextArea(e);
+                  setPromptInput(e.target.value);
+                }}
+                onKeyDown={captureEnter}
+                required={true}
+                disabled={inputDisabled}
+                onFocus={() => setFocused(true)}
+                onBlur={(e) => {
+                  setFocused(false);
+                  adjustTextArea(e);
+                }}
+                value={promptInput}
+                className="cursor-text max-h-[50vh] md:max-h-[350px] md:min-h-[40px] mx-2 md:mx-0 py-2 w-full text-[16px] md:text-md text-white bg-transparent placeholder:text-white/60 resize-none active:outline-none focus:outline-none flex-grow"
+                placeholder={"Send a message"}
+              />
+              {buttonDisabled ? (
+                <StopGenerationButton />
+              ) : (
+                <>
+                  <button
+                    ref={formRef}
+                    type="submit"
+                    className="inline-flex justify-center rounded-2xl cursor-pointer text-white/60 hover:text-white group ml-4"
+                    data-tooltip-id="send-prompt"
+                    data-tooltip-content="Send prompt message to workspace"
+                    aria-label="Send prompt message to workspace"
+                  >
+                    <PaperPlaneRight className="w-7 h-7 my-3" weight="fill" />
+                    <span className="sr-only">Send message</span>
+                  </button>
+                  <Tooltip
+                    id="send-prompt"
+                    place="bottom"
+                    delayShow={300}
+                    className="tooltip !text-xs z-99"
+                  />
+                </>
+              )}
+            </div>
+            <div className="flex justify-between py-3.5">
+              <div className="flex gap-x-2">
+                <SlashCommandsButton
+                  showing={showSlashCommand}
+                  setShowSlashCommand={setShowSlashCommand}
+                />
+                <AvailableAgentsButton
+                  showing={showAgents}
+                  setShowAgents={setShowAgents}
+                />
+                <TextSizeButton />
+              </div>
+              <div className="flex gap-x-2">
+                <SpeechToText sendCommand={sendCommand} />
+              </div>
+            </div>
+          </div>
         </div>
-        <Tracking />
       </form>
     </div>
   );
 }
-
-const Tracking = () => {
-  return (
-    <div className="flex flex-col w-full justify-center items-center gap-y-2 mb-2 px-4 mx:px-0">
-      <p className="text-slate-400 text-xs">
-        Responses from system may produce inaccurate or invalid responses - use
-        with caution.
-      </p>
-    </div>
-  );
-};

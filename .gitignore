@@ -5,6 +5,7 @@ v-env
 node_modules
 __pycache__
 v-env
-*.lock
 .DS_Store
-
+aws_cf_deploy_anything_llm.json
+yarn.lock
+*.bak

@@ -6,7 +6,9 @@
 
 **Requirements**
 
-- Pinecone account (free or paid)
+- Pinecone account with index that allows namespaces.
+
+**Note:** [Namespaces are not supported in `gcp-starter` environments](https://docs.pinecone.io/docs/namespaces) and are required to work with AnythingLLM.
 
 **Instructions**
 
@@ -17,7 +19,6 @@
 
 ```
 VECTOR_DB="pinecone"
-PINECONE_ENVIRONMENT=us-west4-gcp-free
 PINECONE_API_KEY=sklive-123xyz
 PINECONE_INDEX=my-primary-index # the value from the first instruction!
 ```

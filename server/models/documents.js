@@ -1,69 +1,78 @@
-const { fileData } = require("../utils/files");
 const { v4: uuidv4 } = require("uuid");
 const { getVectorDbClass } = require("../utils/helpers");
+const prisma = require("../utils/prisma");
+const { Telemetry } = require("./telemetry");
+const { EventLogs } = require("./eventLogs");
 
 const Document = {
-  tablename: "workspace_documents",
-  colsInit: `
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  docId TEXT NOT NULL UNIQUE,  
-  filename TEXT NOT NULL,
-  docpath TEXT NOT NULL,
-  workspaceId INTEGER NOT NULL,
-  metadata TEXT NULL,
-  createdAt TEXT DEFAULT CURRENT_TIMESTAMP,
-  lastUpdatedAt TEXT DEFAULT CURRENT_TIMESTAMP
-  `,
-  db: async function () {
-    const sqlite3 = require("sqlite3").verbose();
-    const { open } = require("sqlite");
+  writable: ["pinned"],
 
-    const db = await open({
-      filename: `${
-        !!process.env.STORAGE_DIR ? `${process.env.STORAGE_DIR}/` : ""
-      }anythingllm.db`,
-      driver: sqlite3.Database,
-    });
-
-    await db.exec(
-      `CREATE TABLE IF NOT EXISTS ${this.tablename} (${this.colsInit})`
-    );
-    db.on("trace", (sql) => console.log(sql));
-    return db;
-  },
   forWorkspace: async function (workspaceId = null) {
     if (!workspaceId) return [];
-    return await this.where(`workspaceId = ${workspaceId}`);
+    return await prisma.workspace_documents.findMany({
+      where: { workspaceId },
+    });
   },
-  delete: async function (clause = "") {
-    const db = await this.db();
-    await db.get(`DELETE FROM ${this.tablename} WHERE ${clause}`);
-    db.close();
-    return true;
-  },
-  where: async function (clause = "", limit = null) {
-    const db = await this.db();
-    const results = await db.all(
-      `SELECT * FROM ${this.tablename} ${clause ? `WHERE ${clause}` : ""} ${
-        !!limit ? `LIMIT ${limit}` : ""
-      }`
-    );
 
-    db.close();
-    return results;
+  delete: async function (clause = {}) {
+    try {
+      await prisma.workspace_documents.deleteMany({ where: clause });
+      return true;
+    } catch (error) {
+      console.error(error.message);
+      return false;
+    }
   },
-  firstWhere: async function (clause = "") {
-    const results = await this.where(clause);
-    return results.length > 0 ? results[0] : null;
+
+  get: async function (clause = {}) {
+    try {
+      const document = await prisma.workspace_documents.findFirst({
+        where: clause,
+      });
+      return document || null;
+    } catch (error) {
+      console.error(error.message);
+      return null;
+    }
   },
-  addDocuments: async function (workspace, additions = []) {
+
+  getPins: async function (clause = {}) {
+    try {
+      const workspaceIds = await prisma.workspace_documents.findMany({
+        where: clause,
+        select: {
+          workspaceId: true,
+        },
+      });
+      return workspaceIds.map((pin) => pin.workspaceId) || [];
+    } catch (error) {
+      console.error(error.message);
+      return [];
+    }
+  },
+
+  where: async function (clause = {}, limit = null, orderBy = null) {
+    try {
+      const results = await prisma.workspace_documents.findMany({
+        where: clause,
+        ...(limit !== null ? { take: limit } : {}),
+        ...(orderBy !== null ? { orderBy } : {}),
+      });
+      return results;
+    } catch (error) {
+      console.error(error.message);
+      return [];
+    }
+  },
+
+  addDocuments: async function (workspace, additions = [], userId = null) {
     const VectorDb = getVectorDbClass();
-    if (additions.length === 0) return;
+    if (additions.length === 0) return { failed: [], embedded: [] };
+    const { fileData } = require("../utils/files");
+    const embedded = [];
+    const failedToEmbed = [];
+    const errors = new Set();
 
-    const db = await this.db();
-    const stmt = await db.prepare(
-      `INSERT INTO ${this.tablename} (docId, filename, docpath, workspaceId, metadata) VALUES (?,?,?,?,?)`
-    );
     for (const path of additions) {
       const data = await fileData(path);
       if (!data) continue;
@@ -74,53 +83,133 @@ const Document = {
         docId,
         filename: path.split("/")[1],
         docpath: path,
-        workspaceId: Number(workspace.id),
+        workspaceId: workspace.id,
         metadata: JSON.stringify(metadata),
       };
-      const vectorized = await VectorDb.addDocumentToNamespace(
+
+      const { vectorized, error } = await VectorDb.addDocumentToNamespace(
         workspace.slug,
         { ...data, docId },
         path
       );
+
       if (!vectorized) {
-        console.error("Failed to vectorize", path);
+        console.error(
+          "Failed to vectorize",
+          metadata?.title || newDoc.filename
+        );
+        failedToEmbed.push(metadata?.title || newDoc.filename);
+        errors.add(error);
         continue;
       }
-      stmt.run([
-        docId,
-        newDoc.filename,
-        newDoc.docpath,
-        newDoc.workspaceId,
-        newDoc.metadata,
-      ]);
+
+      try {
+        await prisma.workspace_documents.create({ data: newDoc });
+        embedded.push(path);
+      } catch (error) {
+        console.error(error.message);
+      }
     }
-    stmt.finalize();
-    db.close();
 
-    return;
-  },
-  removeDocuments: async function (workspace, removals = []) {
-    const VectorDb = getVectorDbClass();
-
-    if (removals.length === 0) return;
-    const db = await this.db();
-    const stmt = await db.prepare(
-      `DELETE FROM ${this.tablename} WHERE docpath = ? AND workspaceId = ?`
+    await Telemetry.sendTelemetry("documents_embedded_in_workspace", {
+      LLMSelection: process.env.LLM_PROVIDER || "openai",
+      Embedder: process.env.EMBEDDING_ENGINE || "inherit",
+      VectorDbSelection: process.env.VECTOR_DB || "lancedb",
+    });
+    await EventLogs.logEvent(
+      "workspace_documents_added",
+      {
+        workspaceName: workspace?.name || "Unknown Workspace",
+        numberOfDocumentsAdded: additions.length,
+      },
+      userId
     );
+    return { failedToEmbed, errors: Array.from(errors), embedded };
+  },
+
+  removeDocuments: async function (workspace, removals = [], userId = null) {
+    const VectorDb = getVectorDbClass();
+    if (removals.length === 0) return;
+
     for (const path of removals) {
-      const document = await this.firstWhere(
-        `docPath = '${path}' AND workspaceId = ${workspace.id}`
-      );
+      const document = await this.get({
+        docpath: path,
+        workspaceId: workspace.id,
+      });
       if (!document) continue;
       await VectorDb.deleteDocumentFromNamespace(
         workspace.slug,
         document.docId
       );
-      stmt.run([path, workspace.id]);
+
+      try {
+        await prisma.workspace_documents.delete({
+          where: { id: document.id, workspaceId: workspace.id },
+        });
+        await prisma.document_vectors.deleteMany({
+          where: { docId: document.docId },
+        });
+      } catch (error) {
+        console.error(error.message);
+      }
     }
-    stmt.finalize();
-    db.close();
+
+    await Telemetry.sendTelemetry("documents_removed_in_workspace", {
+      LLMSelection: process.env.LLM_PROVIDER || "openai",
+      Embedder: process.env.EMBEDDING_ENGINE || "inherit",
+      VectorDbSelection: process.env.VECTOR_DB || "lancedb",
+    });
+    await EventLogs.logEvent(
+      "workspace_documents_removed",
+      {
+        workspaceName: workspace?.name || "Unknown Workspace",
+        numberOfDocuments: removals.length,
+      },
+      userId
+    );
     return true;
+  },
+
+  count: async function (clause = {}, limit = null) {
+    try {
+      const count = await prisma.workspace_documents.count({
+        where: clause,
+        ...(limit !== null ? { take: limit } : {}),
+      });
+      return count;
+    } catch (error) {
+      console.error("FAILED TO COUNT DOCUMENTS.", error.message);
+      return 0;
+    }
+  },
+  update: async function (id = null, data = {}) {
+    if (!id) throw new Error("No workspace document id provided for update");
+
+    const validKeys = Object.keys(data).filter((key) =>
+      this.writable.includes(key)
+    );
+    if (validKeys.length === 0)
+      return { document: { id }, message: "No valid fields to update!" };
+
+    try {
+      const document = await prisma.workspace_documents.update({
+        where: { id },
+        data,
+      });
+      return { document, message: null };
+    } catch (error) {
+      console.error(error.message);
+      return { document: null, message: error.message };
+    }
+  },
+  content: async function (docId) {
+    if (!docId) throw new Error("No workspace docId provided!");
+    const document = await this.get({ docId: String(docId) });
+    if (!document) throw new Error(`Could not find a document by id ${docId}`);
+
+    const { fileData } = require("../utils/files");
+    const data = await fileData(document.docpath);
+    return { title: data.title, content: data.pageContent };
   },
 };
 

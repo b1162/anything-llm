@@ -1,13 +1,11 @@
-const { ChromaClient, OpenAIEmbeddingFunction } = require("chromadb");
-const { Chroma: ChromaStore } = require("langchain/vectorstores/chroma");
-const { OpenAI } = require("langchain/llms/openai");
-const { VectorDBQAChain } = require("langchain/chains");
-const { OpenAIEmbeddings } = require("langchain/embeddings/openai");
-const { RecursiveCharacterTextSplitter } = require("langchain/text_splitter");
+const { ChromaClient } = require("chromadb");
+const { TextSplitter } = require("../../TextSplitter");
+const { SystemSettings } = require("../../../models/systemSettings");
 const { storeVectorResult, cachedVectorInformation } = require("../../files");
-const { Configuration, OpenAIApi } = require("openai");
 const { v4: uuidv4 } = require("uuid");
-const { toChunks, curateSources } = require("../../helpers");
+const { toChunks, getEmbeddingEngineSelection } = require("../../helpers");
+const { parseAuthHeader } = require("../../http");
+const { sourceIdentifier } = require("../../chats");
 
 const Chroma = {
   name: "Chroma",
@@ -17,6 +15,16 @@ const Chroma = {
 
     const client = new ChromaClient({
       path: process.env.CHROMA_ENDPOINT, // if not set will fallback to localhost:8000
+      ...(!!process.env.CHROMA_API_HEADER && !!process.env.CHROMA_API_KEY
+        ? {
+            fetchOptions: {
+              headers: parseAuthHeader(
+                process.env.CHROMA_API_HEADER || "X-Api-Key",
+                process.env.CHROMA_API_KEY
+              ),
+            },
+          }
+        : {}),
     });
 
     const isAlive = await client.heartbeat();
@@ -30,7 +38,7 @@ const Chroma = {
     const { client } = await this.connect();
     return { heartbeat: await client.heartbeat() };
   },
-  totalIndicies: async function () {
+  totalVectors: async function () {
     const { client } = await this.connect();
     const collections = await client.listCollections();
     var totalVectors = 0;
@@ -43,37 +51,57 @@ const Chroma = {
     }
     return totalVectors;
   },
-  embeddingFunc: function () {
-    return new OpenAIEmbeddingFunction({
-      openai_api_key: process.env.OPEN_AI_KEY,
+  distanceToSimilarity: function (distance = null) {
+    if (distance === null || typeof distance !== "number") return 0.0;
+    if (distance >= 1.0) return 1;
+    if (distance <= 0) return 0;
+    return 1 - distance;
+  },
+  namespaceCount: async function (_namespace = null) {
+    const { client } = await this.connect();
+    const namespace = await this.namespace(client, _namespace);
+    return namespace?.vectorCount || 0;
+  },
+  similarityResponse: async function (
+    client,
+    namespace,
+    queryVector,
+    similarityThreshold = 0.25,
+    topN = 4,
+    filterIdentifiers = []
+  ) {
+    const collection = await client.getCollection({ name: namespace });
+    const result = {
+      contextTexts: [],
+      sourceDocuments: [],
+      scores: [],
+    };
+
+    const response = await collection.query({
+      queryEmbeddings: queryVector,
+      nResults: topN,
     });
-  },
-  embedder: function () {
-    return new OpenAIEmbeddings({ openAIApiKey: process.env.OPEN_AI_KEY });
-  },
-  openai: function () {
-    const config = new Configuration({ apiKey: process.env.OPEN_AI_KEY });
-    const openai = new OpenAIApi(config);
-    return openai;
-  },
-  llm: function () {
-    const model = process.env.OPEN_MODEL_PREF || "gpt-3.5-turbo";
-    return new OpenAI({
-      openAIApiKey: process.env.OPEN_AI_KEY,
-      temperature: 0.7,
-      modelName: model,
+    response.ids[0].forEach((_, i) => {
+      if (
+        this.distanceToSimilarity(response.distances[0][i]) <
+        similarityThreshold
+      )
+        return;
+
+      if (
+        filterIdentifiers.includes(sourceIdentifier(response.metadatas[0][i]))
+      ) {
+        console.log(
+          "Chroma: A source was filtered from context as it's parent document is pinned."
+        );
+        return;
+      }
+      result.contextTexts.push(response.documents[0][i]);
+      result.sourceDocuments.push(response.metadatas[0][i]);
+      result.scores.push(this.distanceToSimilarity(response.distances[0][i]));
     });
-  },
-  embedChunk: async function (openai, textChunk) {
-    const {
-      data: { data },
-    } = await openai.createEmbedding({
-      model: "text-embedding-ada-002",
-      input: textChunk,
-    });
-    return data.length > 0 && data[0].hasOwnProperty("embedding")
-      ? data[0].embedding
-      : null;
+
+    return result;
   },
   namespace: async function (client, namespace = null) {
     if (!namespace) throw new Error("No namespace value provided.");
@@ -123,7 +151,6 @@ const Chroma = {
         const collection = await client.getOrCreateCollection({
           name: namespace,
           metadata: { "hnsw:space": "cosine" },
-          embeddingFunction: this.embeddingFunc(),
         });
         const { chunks } = cacheResult;
         const documentVectors = [];
@@ -154,24 +181,36 @@ const Chroma = {
         }
 
         await DocumentVectors.bulkInsert(documentVectors);
-        return true;
+        return { vectorized: true, error: null };
       }
 
       // If we are here then we are going to embed and store a novel document.
       // We have to do this manually as opposed to using LangChains `Chroma.fromDocuments`
       // because we then cannot atomically control our namespace to granularly find/remove documents
       // from vectordb.
-      const textSplitter = new RecursiveCharacterTextSplitter({
-        chunkSize: 1000,
-        chunkOverlap: 20,
+      const EmbedderEngine = getEmbeddingEngineSelection();
+      const textSplitter = new TextSplitter({
+        chunkSize: TextSplitter.determineMaxChunkSize(
+          await SystemSettings.getValueOrFallback({
+            label: "text_splitter_chunk_size",
+          }),
+          EmbedderEngine?.embeddingMaxChunkLength
+        ),
+        chunkOverlap: await SystemSettings.getValueOrFallback(
+          { label: "text_splitter_chunk_overlap" },
+          20
+        ),
+        chunkHeaderMeta: {
+          sourceDocument: metadata?.title,
+          published: metadata?.published || "unknown",
+        },
       });
       const textChunks = await textSplitter.splitText(pageContent);
 
       console.log("Chunks created from document:", textChunks.length);
       const documentVectors = [];
       const vectors = [];
-      const openai = this.openai();
-
+      const vectorValues = await EmbedderEngine.embedChunks(textChunks);
       const submission = {
         ids: [],
         embeddings: [],
@@ -179,38 +218,35 @@ const Chroma = {
         documents: [],
       };
 
-      for (const textChunk of textChunks) {
-        const vectorValues = await this.embedChunk(openai, textChunk);
-
-        if (!!vectorValues) {
+      if (!!vectorValues && vectorValues.length > 0) {
+        for (const [i, vector] of vectorValues.entries()) {
           const vectorRecord = {
             id: uuidv4(),
-            values: vectorValues,
+            values: vector,
             // [DO NOT REMOVE]
             // LangChain will be unable to find your text if you embed manually and dont include the `text` key.
             // https://github.com/hwchase17/langchainjs/blob/2def486af734c0ca87285a48f1a04c057ab74bdf/langchain/src/vectorstores/pinecone.ts#L64
-            metadata: { ...metadata, text: textChunk },
+            metadata: { ...metadata, text: textChunks[i] },
           };
 
           submission.ids.push(vectorRecord.id);
           submission.embeddings.push(vectorRecord.values);
           submission.metadatas.push(metadata);
-          submission.documents.push(textChunk);
+          submission.documents.push(textChunks[i]);
 
           vectors.push(vectorRecord);
           documentVectors.push({ docId, vectorId: vectorRecord.id });
-        } else {
-          console.error(
-            "Could not use OpenAI to embed document chunk! This document will not be recorded."
-          );
         }
+      } else {
+        throw new Error(
+          "Could not embed document chunks! This document will not be recorded."
+        );
       }
 
       const { client } = await this.connect();
       const collection = await client.getOrCreateCollection({
         name: namespace,
         metadata: { "hnsw:space": "cosine" },
-        embeddingFunction: this.embeddingFunc(),
       });
 
       if (vectors.length > 0) {
@@ -227,10 +263,10 @@ const Chroma = {
       }
 
       await DocumentVectors.bulkInsert(documentVectors);
-      return true;
+      return { vectorized: true, error: null };
     } catch (e) {
       console.error("addDocumentToNamespace", e.message);
-      return false;
+      return { vectorized: false, error: e.message };
     }
   },
   deleteDocumentFromNamespace: async function (namespace, docId) {
@@ -239,10 +275,9 @@ const Chroma = {
     if (!(await this.namespaceExists(client, namespace))) return;
     const collection = await client.getCollection({
       name: namespace,
-      embeddingFunction: this.embeddingFunc(),
     });
 
-    const knownDocuments = await DocumentVectors.where(`docId = '${docId}'`);
+    const knownDocuments = await DocumentVectors.where({ docId });
     if (knownDocuments.length === 0) return;
 
     const vectorIds = knownDocuments.map((doc) => doc.vectorId);
@@ -252,32 +287,42 @@ const Chroma = {
     await DocumentVectors.deleteIds(indexes);
     return true;
   },
-  query: async function (reqBody = {}) {
-    const { namespace = null, input } = reqBody;
-    if (!namespace || !input) throw new Error("Invalid request body");
+  performSimilaritySearch: async function ({
+    namespace = null,
+    input = "",
+    LLMConnector = null,
+    similarityThreshold = 0.25,
+    topN = 4,
+    filterIdentifiers = [],
+  }) {
+    if (!namespace || !input || !LLMConnector)
+      throw new Error("Invalid request to performSimilaritySearch.");
 
     const { client } = await this.connect();
     if (!(await this.namespaceExists(client, namespace))) {
       return {
-        response: null,
+        contextTexts: [],
         sources: [],
         message: "Invalid query - no documents found for workspace!",
       };
     }
 
-    const vectorStore = await ChromaStore.fromExistingCollection(
-      this.embedder(),
-      { collectionName: namespace, url: process.env.CHROMA_ENDPOINT }
+    const queryVector = await LLMConnector.embedTextInput(input);
+    const { contextTexts, sourceDocuments } = await this.similarityResponse(
+      client,
+      namespace,
+      queryVector,
+      similarityThreshold,
+      topN,
+      filterIdentifiers
     );
-    const model = this.llm();
-    const chain = VectorDBQAChain.fromLLM(model, vectorStore, {
-      k: 5,
-      returnSourceDocuments: true,
+
+    const sources = sourceDocuments.map((metadata, i) => {
+      return { metadata: { ...metadata, text: contextTexts[i] } };
     });
-    const response = await chain.call({ query: input });
     return {
-      response: response.text,
-      sources: curateSources(response.sourceDocuments),
+      contextTexts,
+      sources: this.curateSources(sources),
       message: false,
     };
   },
@@ -308,6 +353,22 @@ const Chroma = {
     const { client } = await this.connect();
     await client.reset();
     return { reset: true };
+  },
+  curateSources: function (sources = []) {
+    const documents = [];
+    for (const source of sources) {
+      const { metadata = {} } = source;
+      if (Object.keys(metadata).length > 0) {
+        documents.push({
+          ...metadata,
+          ...(source.hasOwnProperty("pageContent")
+            ? { text: source.pageContent }
+            : {}),
+        });
+      }
+    }
+
+    return documents;
   },
 };
 

@@ -1,82 +1,81 @@
-const { PineconeClient } = require("@pinecone-database/pinecone");
-const { PineconeStore } = require("langchain/vectorstores/pinecone");
-const { OpenAI } = require("langchain/llms/openai");
-const { ChatOpenAI } = require("langchain/chat_models/openai");
-const { VectorDBQAChain, LLMChain } = require("langchain/chains");
-const { OpenAIEmbeddings } = require("langchain/embeddings/openai");
-const { VectorStoreRetrieverMemory } = require("langchain/memory");
-const { PromptTemplate } = require("langchain/prompts");
-const { RecursiveCharacterTextSplitter } = require("langchain/text_splitter");
+const { Pinecone } = require("@pinecone-database/pinecone");
+const { TextSplitter } = require("../../TextSplitter");
+const { SystemSettings } = require("../../../models/systemSettings");
 const { storeVectorResult, cachedVectorInformation } = require("../../files");
-const { Configuration, OpenAIApi } = require("openai");
 const { v4: uuidv4 } = require("uuid");
-const { toChunks, curateSources } = require("../../helpers");
+const { toChunks, getEmbeddingEngineSelection } = require("../../helpers");
+const { sourceIdentifier } = require("../../chats");
 
-const Pinecone = {
+const PineconeDB = {
   name: "Pinecone",
   connect: async function () {
     if (process.env.VECTOR_DB !== "pinecone")
       throw new Error("Pinecone::Invalid ENV settings");
 
-    const client = new PineconeClient();
-    await client.init({
+    const client = new Pinecone({
       apiKey: process.env.PINECONE_API_KEY,
-      environment: process.env.PINECONE_ENVIRONMENT,
-    });
-    const pineconeIndex = client.Index(process.env.PINECONE_INDEX);
-    const { status } = await client.describeIndex({
-      indexName: process.env.PINECONE_INDEX,
     });
 
-    if (!status.ready) throw new Error("Pinecode::Index not ready.");
+    const pineconeIndex = client.Index(process.env.PINECONE_INDEX);
+    const { status } = await client.describeIndex(process.env.PINECONE_INDEX);
+
+    if (!status.ready) throw new Error("Pinecone::Index not ready.");
     return { client, pineconeIndex, indexName: process.env.PINECONE_INDEX };
   },
-  embedder: function () {
-    return new OpenAIEmbeddings({ openAIApiKey: process.env.OPEN_AI_KEY });
-  },
-  openai: function () {
-    const config = new Configuration({ apiKey: process.env.OPEN_AI_KEY });
-    const openai = new OpenAIApi(config);
-    return openai;
-  },
-  embedChunk: async function (openai, textChunk) {
-    const {
-      data: { data },
-    } = await openai.createEmbedding({
-      model: "text-embedding-ada-002",
-      input: textChunk,
-    });
-    return data.length > 0 && data[0].hasOwnProperty("embedding")
-      ? data[0].embedding
-      : null;
-  },
-  llm: function () {
-    const model = process.env.OPEN_MODEL_PREF || "gpt-3.5-turbo";
-    return new OpenAI({
-      openAIApiKey: process.env.OPEN_AI_KEY,
-      temperature: 0.7,
-      modelName: model,
-    });
-  },
-  chatLLM: function () {
-    const model = process.env.OPEN_MODEL_PREF || "gpt-3.5-turbo";
-    return new ChatOpenAI({
-      openAIApiKey: process.env.OPEN_AI_KEY,
-      temperature: 0.7,
-      modelName: model,
-    });
-  },
-  totalIndicies: async function () {
+  totalVectors: async function () {
     const { pineconeIndex } = await this.connect();
-    const { namespaces } = await pineconeIndex.describeIndexStats1();
+    const { namespaces } = await pineconeIndex.describeIndexStats();
+
     return Object.values(namespaces).reduce(
-      (a, b) => a + (b?.vectorCount || 0),
+      (a, b) => a + (b?.recordCount || 0),
       0
     );
   },
+  namespaceCount: async function (_namespace = null) {
+    const { pineconeIndex } = await this.connect();
+    const namespace = await this.namespace(pineconeIndex, _namespace);
+    return namespace?.recordCount || 0;
+  },
+  similarityResponse: async function (
+    index,
+    namespace,
+    queryVector,
+    similarityThreshold = 0.25,
+    topN = 4,
+    filterIdentifiers = []
+  ) {
+    const result = {
+      contextTexts: [],
+      sourceDocuments: [],
+      scores: [],
+    };
+
+    const pineconeNamespace = index.namespace(namespace);
+    const response = await pineconeNamespace.query({
+      vector: queryVector,
+      topK: topN,
+      includeMetadata: true,
+    });
+
+    response.matches.forEach((match) => {
+      if (match.score < similarityThreshold) return;
+      if (filterIdentifiers.includes(sourceIdentifier(match.metadata))) {
+        console.log(
+          "Pinecone: A source was filtered from context as it's parent document is pinned."
+        );
+        return;
+      }
+
+      result.contextTexts.push(match.metadata.text);
+      result.sourceDocuments.push(match);
+      result.scores.push(match.score);
+    });
+
+    return result;
+  },
   namespace: async function (index, namespace = null) {
     if (!namespace) throw new Error("No namespace value provided.");
-    const { namespaces } = await index.describeIndexStats1();
+    const { namespaces } = await index.describeIndexStats();
     return namespaces.hasOwnProperty(namespace) ? namespaces[namespace] : null;
   },
   hasNamespace: async function (namespace = null) {
@@ -86,11 +85,12 @@ const Pinecone = {
   },
   namespaceExists: async function (index, namespace = null) {
     if (!namespace) throw new Error("No namespace value provided.");
-    const { namespaces } = await index.describeIndexStats1();
+    const { namespaces } = await index.describeIndexStats();
     return namespaces.hasOwnProperty(namespace);
   },
   deleteVectorsInNamespace: async function (index, namespace = null) {
-    await index.delete1({ namespace, deleteAll: true });
+    const pineconeNamespace = index.namespace(namespace);
+    await pineconeNamespace.deleteAll();
     return true;
   },
   addDocumentToNamespace: async function (
@@ -107,6 +107,7 @@ const Pinecone = {
       const cacheResult = await cachedVectorInformation(fullFilePath);
       if (cacheResult.exists) {
         const { pineconeIndex } = await this.connect();
+        const pineconeNamespace = pineconeIndex.namespace(namespace);
         const { chunks } = cacheResult;
         const documentVectors = [];
 
@@ -118,18 +119,11 @@ const Pinecone = {
             documentVectors.push({ docId, vectorId: id });
             return { ...chunk, id };
           });
-
-          // Push chunks with new ids to pinecone.
-          await pineconeIndex.upsert({
-            upsertRequest: {
-              vectors: [...newChunks],
-              namespace,
-            },
-          });
+          await pineconeNamespace.upsert([...newChunks]);
         }
 
         await DocumentVectors.bulkInsert(documentVectors);
-        return true;
+        return { vectorized: true, error: null };
       }
 
       // If we are here then we are going to embed and store a novel document.
@@ -137,58 +131,67 @@ const Pinecone = {
       // because we then cannot atomically control our namespace to granularly find/remove documents
       // from vectordb.
       // https://github.com/hwchase17/langchainjs/blob/2def486af734c0ca87285a48f1a04c057ab74bdf/langchain/src/vectorstores/pinecone.ts#L167
-      const textSplitter = new RecursiveCharacterTextSplitter({
-        chunkSize: 1000,
-        chunkOverlap: 20,
+      const EmbedderEngine = getEmbeddingEngineSelection();
+      const textSplitter = new TextSplitter({
+        chunkSize: TextSplitter.determineMaxChunkSize(
+          await SystemSettings.getValueOrFallback({
+            label: "text_splitter_chunk_size",
+          }),
+          EmbedderEngine?.embeddingMaxChunkLength
+        ),
+        chunkOverlap: await SystemSettings.getValueOrFallback(
+          { label: "text_splitter_chunk_overlap" },
+          20
+        ),
+        chunkHeaderMeta: {
+          sourceDocument: metadata?.title,
+          published: metadata?.published || "unknown",
+        },
       });
       const textChunks = await textSplitter.splitText(pageContent);
 
       console.log("Chunks created from document:", textChunks.length);
       const documentVectors = [];
       const vectors = [];
-      const openai = this.openai();
-      for (const textChunk of textChunks) {
-        const vectorValues = await this.embedChunk(openai, textChunk);
+      const vectorValues = await EmbedderEngine.embedChunks(textChunks);
 
-        if (!!vectorValues) {
+      if (!!vectorValues && vectorValues.length > 0) {
+        for (const [i, vector] of vectorValues.entries()) {
           const vectorRecord = {
             id: uuidv4(),
-            values: vectorValues,
+            values: vector,
             // [DO NOT REMOVE]
             // LangChain will be unable to find your text if you embed manually and dont include the `text` key.
             // https://github.com/hwchase17/langchainjs/blob/2def486af734c0ca87285a48f1a04c057ab74bdf/langchain/src/vectorstores/pinecone.ts#L64
-            metadata: { ...metadata, text: textChunk },
+            metadata: { ...metadata, text: textChunks[i] },
           };
+
           vectors.push(vectorRecord);
           documentVectors.push({ docId, vectorId: vectorRecord.id });
-        } else {
-          console.error(
-            "Could not use OpenAI to embed document chunk! This document will not be recorded."
-          );
         }
+      } else {
+        throw new Error(
+          "Could not embed document chunks! This document will not be recorded."
+        );
       }
 
       if (vectors.length > 0) {
         const chunks = [];
         const { pineconeIndex } = await this.connect();
+        const pineconeNamespace = pineconeIndex.namespace(namespace);
         console.log("Inserting vectorized chunks into Pinecone.");
         for (const chunk of toChunks(vectors, 100)) {
           chunks.push(chunk);
-          await pineconeIndex.upsert({
-            upsertRequest: {
-              vectors: [...chunk],
-              namespace,
-            },
-          });
+          await pineconeNamespace.upsert([...chunk]);
         }
         await storeVectorResult(chunks, fullFilePath);
       }
 
       await DocumentVectors.bulkInsert(documentVectors);
-      return true;
+      return { vectorized: true, error: null };
     } catch (e) {
       console.error("addDocumentToNamespace", e.message);
-      return false;
+      return { vectorized: false, error: e.message };
     }
   },
   deleteDocumentFromNamespace: async function (namespace, docId) {
@@ -196,14 +199,15 @@ const Pinecone = {
     const { pineconeIndex } = await this.connect();
     if (!(await this.namespaceExists(pineconeIndex, namespace))) return;
 
-    const knownDocuments = await DocumentVectors.where(`docId = '${docId}'`);
+    const knownDocuments = await DocumentVectors.where({ docId });
     if (knownDocuments.length === 0) return;
 
     const vectorIds = knownDocuments.map((doc) => doc.vectorId);
-    await pineconeIndex.delete1({
-      ids: vectorIds,
-      namespace,
-    });
+
+    const pineconeNamespace = pineconeIndex.namespace(namespace);
+    for (const batchOfVectorIds of toChunks(vectorIds, 1000)) {
+      await pineconeNamespace.deleteMany(batchOfVectorIds);
+    }
 
     const indexes = knownDocuments.map((doc) => doc.id);
     await DocumentVectors.deleteIds(indexes);
@@ -232,72 +236,58 @@ const Pinecone = {
       message: `Namespace ${namespace} was deleted along with ${details.vectorCount} vectors.`,
     };
   },
-  query: async function (reqBody = {}) {
-    const { namespace = null, input } = reqBody;
-    if (!namespace || !input) throw new Error("Invalid request body");
-
-    const { pineconeIndex } = await this.connect();
-    if (!(await this.namespaceExists(pineconeIndex, namespace))) {
-      return {
-        response: null,
-        sources: [],
-        message: "Invalid query - no documents found for workspace!",
-      };
-    }
-
-    const vectorStore = await PineconeStore.fromExistingIndex(this.embedder(), {
-      pineconeIndex,
-      namespace,
-    });
-
-    const model = this.llm();
-    const chain = VectorDBQAChain.fromLLM(model, vectorStore, {
-      k: 5,
-      returnSourceDocuments: true,
-    });
-    const response = await chain.call({ query: input });
-    return {
-      response: response.text,
-      sources: curateSources(response.sourceDocuments),
-      message: false,
-    };
-  },
-  // This implementation of chat also expands the memory of the chat itself
-  // and adds more tokens to the PineconeDB instance namespace
-  chat: async function (reqBody = {}) {
-    const { namespace = null, input } = reqBody;
-    if (!namespace || !input) throw new Error("Invalid request body");
+  performSimilaritySearch: async function ({
+    namespace = null,
+    input = "",
+    LLMConnector = null,
+    similarityThreshold = 0.25,
+    topN = 4,
+    filterIdentifiers = [],
+  }) {
+    if (!namespace || !input || !LLMConnector)
+      throw new Error("Invalid request to performSimilaritySearch.");
 
     const { pineconeIndex } = await this.connect();
     if (!(await this.namespaceExists(pineconeIndex, namespace)))
       throw new Error(
-        "Invalid namespace - has it been collected and seeded yet?"
+        "Invalid namespace - has it been collected and populated yet?"
       );
 
-    const vectorStore = await PineconeStore.fromExistingIndex(this.embedder(), {
+    const queryVector = await LLMConnector.embedTextInput(input);
+    const { contextTexts, sourceDocuments } = await this.similarityResponse(
       pineconeIndex,
       namespace,
+      queryVector,
+      similarityThreshold,
+      topN,
+      filterIdentifiers
+    );
+
+    const sources = sourceDocuments.map((metadata, i) => {
+      return { ...metadata, text: contextTexts[i] };
     });
+    return {
+      contextTexts,
+      sources: this.curateSources(sources),
+      message: false,
+    };
+  },
+  curateSources: function (sources = []) {
+    const documents = [];
+    for (const source of sources) {
+      const { metadata = {} } = source;
+      if (Object.keys(metadata).length > 0) {
+        documents.push({
+          ...metadata,
+          ...(source.hasOwnProperty("pageContent")
+            ? { text: source.pageContent }
+            : {}),
+        });
+      }
+    }
 
-    const memory = new VectorStoreRetrieverMemory({
-      vectorStoreRetriever: vectorStore.asRetriever(1),
-      memoryKey: "history",
-    });
-
-    const model = this.llm();
-    const prompt =
-      PromptTemplate.fromTemplate(`The following is a friendly conversation between a human and an AI. The AI is very casual and talkative and responds with a friendly tone. If the AI does not know the answer to a question, it truthfully says it does not know.
-  Relevant pieces of previous conversation:
-  {history}
-  
-  Current conversation:
-  Human: {input}
-  AI:`);
-
-    const chain = new LLMChain({ llm: model, prompt, memory });
-    const response = await chain.call({ input });
-    return { response: response.text, sources: [], message: false };
+    return documents;
   },
 };
 
-module.exports.Pinecone = Pinecone;
+module.exports.Pinecone = PineconeDB;

@@ -1,169 +1,63 @@
-import React, { useState, useEffect } from "react";
-import { X } from "react-feather";
-import System from "../../../models/system";
-import Workspace from "../../../models/workspace";
-import paths from "../../../utils/paths";
+import React, { useState, useEffect, memo } from "react";
+import { X } from "@phosphor-icons/react";
 import { useParams } from "react-router-dom";
-import Directory from "./Directory";
-import ConfirmationModal from "./ConfirmationModal";
-import CannotRemoveModal from "./CannotRemoveModal";
+import Workspace from "../../../models/workspace";
+import System from "../../../models/system";
+import { isMobile } from "react-device-detect";
+import useUser from "../../../hooks/useUser";
+import DocumentSettings from "./Documents";
+import DataConnectors from "./DataConnectors";
 
-const noop = () => false;
-export default function ManageWorkspace({ hideModal = noop, workspace }) {
+const noop = () => {};
+const ManageWorkspace = ({ hideModal = noop, providedSlug = null }) => {
   const { slug } = useParams();
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [showConfirmation, setShowConfirmation] = useState(false);
-  const [directories, setDirectories] = useState(null);
-  const [originalDocuments, setOriginalDocuments] = useState([]);
-  const [selectedFiles, setSelectFiles] = useState([]);
-  const [vectordb, setVectorDB] = useState(null);
-  const [showingNoRemovalModal, setShowingNoRemovalModal] = useState(false);
+  const { user } = useUser();
+  const [workspace, setWorkspace] = useState(null);
+  const [settings, setSettings] = useState({});
+  const [selectedTab, setSelectedTab] = useState("documents");
 
   useEffect(() => {
-    async function fetchKeys() {
-      const _workspace = await Workspace.bySlug(workspace.slug);
-      const localFiles = await System.localFiles();
-      const settings = await System.keys();
-      const originalDocs = _workspace.documents.map((doc) => doc.docpath) || [];
-      setDirectories(localFiles);
-      setOriginalDocuments([...originalDocs]);
-      setSelectFiles([...originalDocs]);
-      setVectorDB(settings?.VectorDB);
-      setLoading(false);
+    async function getSettings() {
+      const _settings = await System.keys();
+      setSettings(_settings ?? {});
     }
-    fetchKeys();
+    getSettings();
   }, []);
 
-  const deleteWorkspace = async () => {
-    if (
-      !window.confirm(
-        `You are about to delete your entire ${workspace.name} workspace. This will remove all vector embeddings on your vector database.\n\nThe original source files will remain untouched. This action is irreversible.`
-      )
-    )
-      return false;
-    await Workspace.delete(workspace.slug);
-    workspace.slug === slug
-      ? (window.location = paths.home())
-      : window.location.reload();
-  };
-
-  const docChanges = () => {
-    const changes = {
-      adds: [],
-      deletes: [],
-    };
-
-    selectedFiles.map((doc) => {
-      const inOriginal = !!originalDocuments.find((oDoc) => oDoc === doc);
-      if (!inOriginal) {
-        changes.adds.push(doc);
-      }
-    });
-
-    originalDocuments.map((doc) => {
-      const selected = !!selectedFiles.find((oDoc) => oDoc === doc);
-      if (!selected) {
-        changes.deletes.push(doc);
-      }
-    });
-
-    return changes;
-  };
-
-  const confirmChanges = (e) => {
-    e.preventDefault();
-    const changes = docChanges();
-    changes.adds.length > 0 ? setShowConfirmation(true) : updateWorkspace(e);
-  };
-
-  const updateWorkspace = async (e) => {
-    e.preventDefault();
-    setSaving(true);
-    setShowConfirmation(false);
-    const changes = docChanges();
-    await Workspace.modifyEmbeddings(workspace.slug, changes);
-    setSaving(false);
-    window.location.reload();
-  };
-
-  const isSelected = (filepath) => {
-    const isFolder = !filepath.includes("/");
-    return isFolder
-      ? selectedFiles.some((doc) => doc.includes(filepath.split("/")[0]))
-      : selectedFiles.some((doc) => doc.includes(filepath));
-  };
-
-  const isOriginalDoc = (filepath) => {
-    const isFolder = !filepath.includes("/");
-    return isFolder
-      ? originalDocuments.some((doc) => doc.includes(filepath.split("/")[0]))
-      : originalDocuments.some((doc) => doc.includes(filepath));
-  };
-
-  const toggleSelection = (filepath) => {
-    const isFolder = !filepath.includes("/");
-    const parent = isFolder ? filepath : filepath.split("/")[0];
-
-    if (isSelected(filepath)) {
-      // Certain vector DBs do not contain the ability to delete vectors
-      // so we cannot remove from these. The user will have to clear the entire workspace.
-      if (["lancedb"].includes(vectordb) && isOriginalDoc(filepath)) {
-        setShowingNoRemovalModal(true);
-        return false;
-      }
-
-      const updatedDocs = isFolder
-        ? selectedFiles.filter((doc) => !doc.includes(parent))
-        : selectedFiles.filter((doc) => !doc.includes(filepath));
-      setSelectFiles([...new Set(updatedDocs)]);
-    } else {
-      var newDocs = [];
-      var parentDirs = directories.items.find(
-        (item) => item.name === parent
-      )
-      if (isFolder && parentDirs) {
-        const folderItems = parentDirs.items;
-        newDocs = folderItems.map((item) => parent + "/" + item.name);
-      } else {
-        newDocs = [filepath];
-      }
-
-      const combined = [...selectedFiles, ...newDocs];
-      setSelectFiles([...new Set(combined)]);
+  useEffect(() => {
+    async function fetchWorkspace() {
+      const workspace = await Workspace.bySlug(providedSlug ?? slug);
+      setWorkspace(workspace);
     }
-  };
+    fetchWorkspace();
+  }, [providedSlug, slug]);
 
-  if (loading) {
+  if (!workspace) return null;
+
+  if (isMobile) {
     return (
-      <div className="fixed top-0 left-0 right-0 z-50 w-full p-4 overflow-x-hidden overflow-y-auto md:inset-0 h-[calc(100%-1rem)] h-full bg-black bg-opacity-50 flex items-center justify-center">
-        <div
-          className="flex fixed top-0 left-0 right-0 w-full h-full"
-          onClick={hideModal}
-        />
-        <div className="relative w-full max-w-2xl max-h-full">
-          <div className="relative bg-white rounded-lg shadow dark:bg-stone-700">
-            <div className="flex items-start justify-between p-4 border-b rounded-t dark:border-gray-600">
-              <h3 className="text-xl font-semibold text-gray-900 dark:text-white">
-                {workspace.name} Settings
-              </h3>
-              <button
-                onClick={hideModal}
-                type="button"
-                className="text-gray-400 bg-transparent hover:bg-gray-200 hover:text-gray-900 rounded-lg text-sm p-1.5 ml-auto inline-flex items-center dark:hover:bg-gray-600 dark:hover:text-white"
-                data-modal-hide="staticModal"
-              >
-                <X className="text-gray-300 text-lg" />
-              </button>
-            </div>
-            <div className="p-6 flex h-full w-full max-h-[80vh] overflow-y-scroll">
-              <div className="flex flex-col gap-y-1 w-full">
-                <p className="text-slate-200 dark:text-stone-300 text-center">
-                  loading workspace files
-                </p>
+      <div className="w-screen h-screen fixed top-0 left-0 flex justify-center items-center z-99">
+        <div className="backdrop h-full w-full absolute top-0 z-10" />
+        <div className={`absolute max-h-full transition duration-300 z-20`}>
+          <div className="relative max-w-lg mx-auto bg-main-gradient rounded-[12px] shadow border-2 border-slate-300/10">
+            <div className="p-6">
+              <h1 className="text-white text-lg font-semibold">
+                Editing "{workspace.name}"
+              </h1>
+              <p className="text-white mt-4">
+                Editing these settings are only available on a desktop device.
+                Please access this page on your desktop to continue.
+              </p>
+              <div className="mt-6 flex justify-end">
+                <button
+                  onClick={hideModal}
+                  type="button"
+                  className="transition-all duration-300 border border-slate-200 px-4 py-2 rounded-lg text-white text-sm items-center flex gap-x-2 hover:bg-slate-200 hover:text-slate-800 focus:ring-gray-800"
+                >
+                  Dismiss
+                </button>
               </div>
             </div>
-            <div className="flex items-center p-6 space-x-2 border-t border-gray-200 rounded-b dark:border-gray-600"></div>
           </div>
         </div>
       </div>
@@ -171,94 +65,78 @@ export default function ManageWorkspace({ hideModal = noop, workspace }) {
   }
 
   return (
-    <>
-      {showConfirmation && (
-        <ConfirmationModal
-          directories={directories}
-          hideConfirm={() => setShowConfirmation(false)}
-          additions={docChanges().adds}
-          updateWorkspace={updateWorkspace}
-        />
-      )}
-      {showingNoRemovalModal && (
-        <CannotRemoveModal
-          hideModal={() => setShowingNoRemovalModal(false)}
-          vectordb={vectordb}
-        />
-      )}
-      <div className="fixed top-0 left-0 right-0 z-50 w-full p-4 overflow-x-hidden overflow-y-auto md:inset-0 h-[calc(100%-1rem)] h-full bg-black bg-opacity-50 flex items-center justify-center">
-        <div
-          className="flex fixed top-0 left-0 right-0 w-full h-full"
-          onClick={hideModal}
-        />
-        <div className="relative w-full max-w-2xl max-h-full">
-          <div className="relative bg-white rounded-lg shadow dark:bg-stone-700">
-            <div className="flex items-start justify-between p-4 border-b rounded-t dark:border-gray-600">
-              <h3 className="text-xl font-semibold text-gray-900 dark:text-white">
-                "{workspace.name}" workspace settings
-              </h3>
-              <button
-                onClick={hideModal}
-                type="button"
-                className="text-gray-400 bg-transparent hover:bg-gray-200 hover:text-gray-900 rounded-lg text-sm p-1.5 ml-auto inline-flex items-center dark:hover:bg-gray-600 dark:hover:text-white"
-                data-modal-hide="staticModal"
-              >
-                <X className="text-gray-300 text-lg" />
-              </button>
-            </div>
-            <div className="p-6 flex h-full w-full max-h-[80vh] overflow-y-scroll">
-              <div className="flex flex-col gap-y-1 w-full">
-                <div className="flex flex-col mb-2">
-                  <p className="text-gray-800 dark:text-stone-200 text-base ">
-                    Select folders to add or remove from workspace.
-                  </p>
-                  <p className="text-gray-800 dark:text-stone-400 text-xs italic">
-                    {selectedFiles.length} documents in workspace selected.
-                  </p>
-                </div>
-                <div className="w-full h-auto border border-slate-200 dark:border-stone-600 rounded-lg px-4 py-2">
-                  {!!directories && (
-                    <Directory
-                      files={directories}
-                      toggleSelection={toggleSelection}
-                      isSelected={isSelected}
-                    />
-                  )}
-                </div>
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between p-6 space-x-2 border-t border-gray-200 rounded-b dark:border-gray-600">
-              <button
-                onClick={deleteWorkspace}
-                type="button"
-                className="border border-transparent text-gray-500 bg-white hover:bg-red-100 rounded-lg text-sm font-medium px-5 py-2.5 hover:text-red-900 focus:z-10 dark:bg-transparent dark:text-gray-300 dark:hover:text-white dark:hover:bg-red-600"
-              >
-                Delete Workspace
-              </button>
-              <div className="flex items-center">
-                <button
-                  disabled={saving}
-                  onClick={confirmChanges}
-                  type="submit"
-                  className="text-slate-200 bg-black-900 px-4 py-2 rounded-lg hover:bg-gray-900"
-                >
-                  {saving ? "Saving..." : "Confirm Changes"}
-                </button>
-              </div>
-            </div>
+    <div className="w-screen h-screen fixed top-0 left-0 flex justify-center items-center z-99">
+      <div className="backdrop h-full w-full absolute top-0 z-10" />
+      <div className="absolute max-h-full w-fit transition duration-300 z-20 md:overflow-y-auto py-10">
+        <div className="relative bg-main-gradient rounded-[12px] shadow border-2 border-slate-300/10">
+          <div className="flex items-start justify-between p-2 rounded-t border-gray-500/50 relative">
+            <button
+              onClick={hideModal}
+              type="button"
+              className="z-50 text-gray-400 bg-transparent rounded-lg text-sm p-1.5 ml-auto inline-flex items-center hover:border-white/60 bg-sidebar-button hover:bg-menu-item-selected-gradient hover:border-slate-100 hover:border-opacity-50 border-transparent border"
+            >
+              <X className="text-gray-300 text-lg" />
+            </button>
           </div>
+
+          {user?.role !== "default" && (
+            <ModalTabSwitcher
+              selectedTab={selectedTab}
+              setSelectedTab={setSelectedTab}
+            />
+          )}
+
+          {selectedTab === "documents" ? (
+            <DocumentSettings workspace={workspace} systemSettings={settings} />
+          ) : (
+            <DataConnectors workspace={workspace} systemSettings={settings} />
+          )}
         </div>
       </div>
-    </>
+    </div>
   );
-}
+};
 
+export default memo(ManageWorkspace);
+
+const ModalTabSwitcher = ({ selectedTab, setSelectedTab }) => {
+  return (
+    <div className="w-full flex justify-center z-10 relative">
+      <div className="gap-x-2 flex justify-center -mt-[68px] mb-10 bg-sidebar-button p-1 rounded-xl shadow border-2 border-slate-300/10 w-fit">
+        <button
+          onClick={() => setSelectedTab("documents")}
+          className={`px-4 py-2 rounded-[8px] font-semibold text-white hover:bg-switch-selected hover:bg-opacity-60 ${
+            selectedTab === "documents"
+              ? "bg-switch-selected shadow-md font-bold"
+              : "bg-sidebar-button text-white/20 font-medium hover:text-white"
+          }`}
+        >
+          Documents
+        </button>
+        <button
+          onClick={() => setSelectedTab("dataConnectors")}
+          className={`px-4 py-2 rounded-[8px] font-semibold text-white hover:bg-switch-selected hover:bg-opacity-60 ${
+            selectedTab === "dataConnectors"
+              ? "bg-switch-selected shadow-md font-bold"
+              : "bg-sidebar-button text-white/20 font-medium hover:text-white"
+          }`}
+        >
+          Data Connectors
+        </button>
+      </div>
+    </div>
+  );
+};
 export function useManageWorkspaceModal() {
+  const { user } = useUser();
   const [showing, setShowing] = useState(false);
+
   const showModal = () => {
-    setShowing(true);
+    if (user?.role !== "default") {
+      setShowing(true);
+    }
   };
+
   const hideModal = () => {
     setShowing(false);
   };
